@@ -1,4 +1,4 @@
-# CamVision - Ubiquiti
+# CamViewer
 
 A self-hosted, low-latency live view for RTSP cameras - built for UniFi Protect,
 but works with any camera that exposes an RTSP/RTSPS stream. Add cameras through
@@ -51,21 +51,34 @@ app's one port is.
 
 ## Installation
 
-**1. Clone this repo**
+**Clone the repo, then run the installer:**
 
 ```bash
-git clone https://github.com/Marsbar12101/CamVision---Ubiquiti.git
-cd CamVision---Ubiquiti
+git clone https://github.com/YOUR-USERNAME/camviewer.git
+cd camviewer
+bash install.sh
 ```
 
-**2. Install Node.js** (skip if `node -v` already shows 18+)
+That's it. `install.sh` installs Node.js if needed, downloads the right
+go2rtc binary for your machine's CPU, installs dependencies, sets up both
+services to run on boot (systemd), starts everything, and at the end asks
+whether you also want fullscreen kiosk mode on this machine's own monitor.
+It's safe to re-run - it skips whatever's already done.
+
+When it finishes, visit `http://<this-machine's-ip>:3000` from any device
+on your network.
+
+<details>
+<summary>Prefer to do it manually, or install.sh didn't work for you?</summary>
+
+**1. Install Node.js** (skip if `node -v` already shows 18+)
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 ```
 
-**3. Download go2rtc** for your platform
+**2. Download go2rtc** for your platform
 
 ```bash
 uname -m
@@ -77,13 +90,13 @@ curl -L -o go2rtc https://github.com/AlexxIT/go2rtc/releases/latest/download/go2
 chmod +x go2rtc
 ```
 
-**4. Install dependencies**
+**3. Install dependencies**
 
 ```bash
 npm install
 ```
 
-**5. Run it**
+**4. Run it**
 
 ```bash
 # Terminal 1
@@ -93,7 +106,10 @@ npm install
 node server.js
 ```
 
-Visit `http://<this-machine's-ip>:3000` from any device on your network.
+See [Running on boot](#running-on-boot) below to set these up as services
+instead of running them manually in terminals.
+
+</details>
 
 ## Adding a camera
 
@@ -129,9 +145,20 @@ deleting it.
 
 ## Running on boot
 
-Two systemd service files are included. Edit the paths inside them if your
-username isn't `pi` or the project lives somewhere other than
-`/home/pi/camviewer`, then:
+If you used `install.sh`, this is already done - it sets up and starts both
+services automatically. This section is only for the manual install path,
+or if you want to see/edit the generated services.
+
+```bash
+systemctl status go2rtc
+systemctl status camviewer
+journalctl -u camviewer -f
+```
+
+Static service file templates (`go2rtc.service`, `camviewer.service`) are
+also included if you'd rather set them up by hand - edit the paths/user
+inside them first if your setup doesn't match `pi` / `/home/pi/camviewer`,
+then:
 
 ```bash
 sudo cp go2rtc.service camviewer.service /etc/systemd/system/
@@ -140,11 +167,27 @@ sudo systemctl enable --now go2rtc
 sudo systemctl enable --now camviewer
 ```
 
+## Kiosk mode (show it directly on a monitor)
+
+`install.sh` offers to set this up automatically at the end. To set it up
+separately (or re-run it), if you're on a headless machine (e.g. Ubuntu
+Server on a Pi) with a monitor plugged straight into it:
+
 ```bash
-systemctl status go2rtc
-systemctl status camviewer
-journalctl -u camviewer -f
+bash kiosk/kiosk-setup.sh
 ```
+
+It'll ask which local user to auto-login as and which URL to show (defaults
+to `http://localhost:3000`), then installs a minimal X session + Chromium and
+wires it to start on boot. SSH access is unaffected - this only changes what
+appears on the attached monitor. Reboot to try it:
+
+```bash
+sudo reboot
+```
+
+To get a terminal on the physical screen instead of the kiosk view (for
+maintenance), press `Ctrl+Alt+F2` (and `Ctrl+Alt+F1` to switch back).
 
 ---
 
@@ -160,6 +203,20 @@ journalctl -u camviewer -f
   link for cameras you mostly glance at rather than study closely.
 
 ## Troubleshooting
+
+<details>
+<summary>Kiosk mode still asks for a password on the monitor</summary>
+
+`kiosk-setup.sh` restarts the tty1 login prompt itself so autologin takes
+effect immediately, but if you still see a password prompt after rebooting:
+
+- Run `systemctl status getty@tty1` and check the command line shown -
+  it should include `--autologin <your-username>`. If it doesn't, the
+  drop-in config wasn't applied - re-run `kiosk/kiosk-setup.sh`.
+- On some Raspberry Pi setups, the HDMI output isn't actually `tty1`.
+  Check `/boot/firmware/cmdline.txt` for a `console=` entry to see which
+  tty is your real primary display, and let us know if it's not `tty1`.
+</details>
 
 <details>
 <summary>A tile stays on the red dot / never connects</summary>
@@ -209,15 +266,18 @@ repo and restarted go2rtc (not just the Node app).
 
 ```
 camviewer/
-├── server.js          # Backend: camera list, go2rtc control, WebRTC signaling proxy
-├── go2rtc.yaml         # go2rtc config (streams are added at runtime, not listed here)
-├── go2rtc.service       # systemd unit for go2rtc
-├── camviewer.service    # systemd unit for the Node app
+├── install.sh          # One-shot setup: installs everything and starts it
+├── server.js            # Backend: camera list, go2rtc control, WebRTC signaling proxy
+├── go2rtc.yaml           # go2rtc config (streams are added at runtime, not listed here)
+├── go2rtc.service         # systemd unit template for go2rtc (install.sh generates its own)
+├── camviewer.service       # systemd unit template for the Node app (ditto)
+├── kiosk/
+│   └── kiosk-setup.sh       # Optional: boot straight into fullscreen on an attached monitor
 ├── public/
 │   ├── index.html
 │   ├── style.css
-│   └── app.js          # Grid layouts, drag/resize, WebRTC client
-└── config/              # Created automatically - your camera list & layout (gitignored)
+│   └── app.js               # Grid layouts, drag/resize, WebRTC client
+└── config/                  # Created automatically - your camera list & layout (gitignored)
 ```
 
 ## Credits

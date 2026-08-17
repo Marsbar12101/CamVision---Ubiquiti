@@ -229,8 +229,9 @@ app.put('/api/layout-mode', (req, res) => {
 
 app.put('/api/layout-order', (req, res) => {
   const { order } = req.body || {};
-  if (!Array.isArray(order) || !order.every((id) => typeof id === 'string')) {
-    return res.status(400).json({ error: 'order must be an array of camera ids' });
+  // Each entry is a camera id occupying that slot, or null for an empty slot.
+  if (!Array.isArray(order) || !order.every((id) => typeof id === 'string' || id === null)) {
+    return res.status(400).json({ error: 'order must be an array of camera ids or null' });
   }
   const cfg = loadLayoutConfig();
   cfg.order = order;

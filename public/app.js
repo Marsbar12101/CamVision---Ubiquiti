@@ -23,8 +23,12 @@
   let editingId = null;
   let topZ = 1;
   let layoutMode = 'free'; // 'free' or a number 1-10
-  let gridOrder = []; // camera ids, in the order they fill the current preset's slots
+  // Slot assignment for grid mode: index = slot number (0 = biggest/first cell),
+  // value = camera id occupying it, or null if that slot is empty. Supports gaps,
+  // so a camera can sit in slot 5 while slots 0-4 stay empty.
+  let gridSlots = [];
   const tileEls = new Map(); // camera id -> tile DOM element
+  const placeholderEls = []; // empty-slot DOM elements currently in the workspace
 
   async function api(path, opts) {
     const res = await fetch(path, {
@@ -179,21 +183,52 @@
     return `<svg class="presetIcon" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">${cells}</svg>`;
   }
 
-  // Keeps gridOrder in sync with the camera list: newly added cameras go on the end,
-  // removed ones drop out, without disturbing everyone else's slot.
-  function syncGridOrder() {
+  // Keeps gridSlots in sync with the camera list: removed cameras' slots become
+  // empty (not deleted from the array, so nothing else shifts), and any enabled
+  // camera not currently placed anywhere gets dropped into the first empty slot.
+  function syncGridSlots() {
     const ids = new Set(cameras.map((c) => c.id));
-    gridOrder = gridOrder.filter((id) => ids.has(id));
-    cameras.forEach((c) => { if (!gridOrder.includes(c.id)) gridOrder.push(c.id); });
+    gridSlots = gridSlots.map((id) => (id && ids.has(id) ? id : null));
+    enabledCameras().forEach((cam) => {
+      if (gridSlots.includes(cam.id)) return;
+      const emptyIndex = gridSlots.indexOf(null);
+      if (emptyIndex !== -1) gridSlots[emptyIndex] = cam.id;
+      else gridSlots.push(cam.id);
+    });
   }
 
   let gridOrderSaveTimer = null;
   function persistGridOrder() {
     clearTimeout(gridOrderSaveTimer);
     gridOrderSaveTimer = setTimeout(() => {
-      api('/api/layout-order', { method: 'PUT', body: JSON.stringify({ order: gridOrder }) })
+      api('/api/layout-order', { method: 'PUT', body: JSON.stringify({ order: gridSlots }) })
         .catch((e) => console.error('Failed to save grid order', e));
     }, 250);
+  }
+
+  function clearPlaceholders() {
+    placeholderEls.forEach((el) => el.remove());
+    placeholderEls.length = 0;
+  }
+
+  function renderPlaceholder(rect, slotIndex) {
+    const el = document.createElement('div');
+    el.className = 'tile placeholderTile';
+    el.dataset.slot = slotIndex;
+    el.style.left = rect.x + 'px';
+    el.style.top = rect.y + 'px';
+    el.style.width = rect.w + 'px';
+    el.style.height = rect.h + 'px';
+    el.style.zIndex = 0;
+    el.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+      </svg>
+    `;
+    el.title = 'Drag a camera here, or click to add one';
+    el.addEventListener('click', () => openModal('add'));
+    workspace.appendChild(el);
+    placeholderEls.push(el);
   }
 
   function applyLayout() {
@@ -203,6 +238,7 @@
       if (tile && cam.enabled === false) tile.style.display = 'none';
     });
 
+    clearPlaceholders();
     const active = enabledCameras();
     const visibleIds = new Set();
 
@@ -214,25 +250,51 @@
         visibleIds.add(cam.id);
       });
     } else {
-      const n = Math.min(Number(layoutMode), active.length);
+      // Always show the full preset's slot count, even if you have fewer cameras
+      // than that - empty slots render as drop targets so you can plan out where
+      // cameras will go (and click one to add a camera directly into that spot).
+      const n = Number(layoutMode);
       const rects = computeGridRects(n);
-      // Fill slots in gridOrder (drag-to-reorder) rather than raw add-order.
-      const orderedActive = gridOrder
-        .map((id) => active.find((c) => c.id === id))
-        .filter(Boolean);
-      const slotted = orderedActive.slice(0, n);
-      const overflow = active.filter((c) => !slotted.includes(c));
+      while (gridSlots.length < n) gridSlots.push(null);
 
-      slotted.forEach((cam, i) => {
-        const tile = tileEls.get(cam.id);
-        if (!tile) return;
-        tile.style.display = '';
-        positionTile(cam.id, rects[i].x, rects[i].y, rects[i].w, rects[i].h, 1);
-        visibleIds.add(cam.id);
+      // Any active camera that fell outside the visible range (e.g. parked in a
+      // higher slot from a bigger preset) gets pulled into an empty visible slot
+      // if one's available, so shrinking the preset doesn't just hide it.
+      const activeIds = new Set(active.map((c) => c.id));
+      for (let i = 0; i < gridSlots.length; i++) {
+        if (gridSlots[i] && !activeIds.has(gridSlots[i])) gridSlots[i] = null;
+      }
+      active.forEach((cam) => {
+        const idx = gridSlots.indexOf(cam.id);
+        if (idx === -1 || idx >= n) {
+          const emptyIndex = gridSlots.slice(0, n).indexOf(null);
+          if (emptyIndex !== -1) {
+            if (idx !== -1) gridSlots[idx] = null;
+            gridSlots[emptyIndex] = cam.id;
+          }
+        }
       });
-      overflow.forEach((cam) => {
-        const tile = tileEls.get(cam.id);
-        if (tile) tile.style.display = 'none';
+
+      for (let i = 0; i < n; i++) {
+        const camId = gridSlots[i];
+        const cam = camId ? active.find((c) => c.id === camId) : null;
+        if (cam) {
+          const tile = tileEls.get(cam.id);
+          if (tile) {
+            tile.style.display = '';
+            positionTile(cam.id, rects[i].x, rects[i].y, rects[i].w, rects[i].h, 1);
+            visibleIds.add(cam.id);
+          }
+        } else {
+          renderPlaceholder(rects[i], i);
+        }
+      }
+      // Any enabled camera that couldn't fit in the visible slots stays hidden.
+      active.forEach((cam) => {
+        if (!visibleIds.has(cam.id)) {
+          const tile = tileEls.get(cam.id);
+          if (tile) tile.style.display = 'none';
+        }
       });
     }
 
@@ -310,7 +372,7 @@
           body: JSON.stringify({ name, company, rtsp }),
         });
         cameras.push(cam);
-        syncGridOrder();
+        syncGridSlots();
         persistGridOrder();
         renderTile(cam);
         applyLayout();
@@ -406,7 +468,7 @@
           ensureDisconnected(cam.id);
           connections.delete(cam.id);
           cameras = cameras.filter((c) => c.id !== cam.id);
-          syncGridOrder();
+          syncGridSlots();
           persistGridOrder();
           const tile = tileEls.get(cam.id);
           if (tile) tile.remove();
@@ -614,7 +676,7 @@
         ensureDisconnected(cam.id);
         connections.delete(cam.id);
         cameras = cameras.filter((c) => c.id !== cam.id);
-        syncGridOrder();
+        syncGridSlots();
         persistGridOrder();
         tile.remove();
         tileEls.delete(cam.id);
@@ -668,11 +730,20 @@
     document.querySelectorAll('.tile.dropTarget').forEach((t) => t.classList.remove('dropTarget'));
   }
 
-  function swapGridSlots(idA, idB) {
-    const ia = gridOrder.indexOf(idA);
-    const ib = gridOrder.indexOf(idB);
-    if (ia === -1 || ib === -1) return;
-    [gridOrder[ia], gridOrder[ib]] = [gridOrder[ib], gridOrder[ia]];
+  function swapOrMoveIntoSlot(camId, target) {
+    const sourceIndex = gridSlots.indexOf(camId);
+    if (sourceIndex === -1) return;
+    if (target.dataset.id) {
+      // Dropped onto another camera's tile - swap the two slots.
+      const targetIndex = gridSlots.indexOf(target.dataset.id);
+      if (targetIndex === -1) return;
+      [gridSlots[sourceIndex], gridSlots[targetIndex]] = [gridSlots[targetIndex], gridSlots[sourceIndex]];
+    } else if (target.dataset.slot !== undefined) {
+      // Dropped onto an empty placeholder - move into that slot, vacating the old one.
+      const targetIndex = Number(target.dataset.slot);
+      gridSlots[sourceIndex] = null;
+      gridSlots[targetIndex] = camId;
+    }
   }
 
   function makeDraggable(tile, camRef) {
@@ -713,17 +784,21 @@
     function end(clientX, clientY) {
       if (!dragging) return;
       dragging = false;
-      tile.classList.remove('dragging');
       if (mode === 'free') {
+        tile.classList.remove('dragging');
         persistLayout(cameras.find((c) => c.id === camRef.id));
       } else {
-        clearDropHighlight();
+        // Find what's under the cursor BEFORE restoring pointer-events on the
+        // dragged tile - otherwise the tile itself (still sitting right at the
+        // cursor) blocks detection and every drop looks like it found nothing.
         const target = typeof clientX === 'number' ? findTileUnder(clientX, clientY, tile) : null;
-        if (target && target.dataset.id) {
-          swapGridSlots(camRef.id, target.dataset.id);
+        tile.classList.remove('dragging');
+        clearDropHighlight();
+        if (target) {
+          swapOrMoveIntoSlot(camRef.id, target);
           persistGridOrder();
         }
-        applyLayout(); // snaps every tile back to its (possibly now-swapped) slot
+        applyLayout(); // snaps every tile back to its (possibly now-updated) slot
       }
     }
 
@@ -788,13 +863,13 @@
 
     const layoutCfg = await api('/api/layout-mode');
     layoutMode = layoutCfg.mode;
-    gridOrder = layoutCfg.order || [];
+    gridSlots = layoutCfg.order || [];
     workspace.classList.toggle('free', layoutMode === 'free');
     workspace.classList.toggle('grid', layoutMode !== 'free');
     highlightActivePreset();
 
     cameras = await api('/api/cameras');
-    syncGridOrder();
+    syncGridSlots();
     cameras.forEach(renderTile);
     updateEmptyState();
     applyLayout();
