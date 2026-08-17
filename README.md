@@ -1,4 +1,4 @@
-# CamViewer
+# CamVision - Ubiquiti
 
 A self-hosted, low-latency live view for RTSP cameras - built for UniFi Protect,
 but works with any camera that exposes an RTSP/RTSPS stream. Add cameras through
