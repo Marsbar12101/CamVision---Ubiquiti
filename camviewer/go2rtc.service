@@ -1,0 +1,16 @@
+[Unit]
+Description=go2rtc streaming engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust this path if you put the binary/config somewhere else
+WorkingDirectory=/home/pi/camviewer
+ExecStart=/home/pi/camviewer/go2rtc -config /home/pi/camviewer/go2rtc.yaml
+Restart=on-failure
+RestartSec=3
+User=pi
+
+[Install]
+WantedBy=multi-user.target
