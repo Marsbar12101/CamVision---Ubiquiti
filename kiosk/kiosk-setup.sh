@@ -1,21 +1,35 @@
 #!/usr/bin/env bash
-# Sets up this machine to boot directly into a fullscreen, chrome-less browser
-# showing CamViewer on its own attached monitor - no desktop environment needed.
+# Sets this machine up to boot straight into a fullscreen, chrome-less browser
+# showing CamViewer, using Ubuntu Desktop's own display manager (GDM) rather
+# than a hand-rolled X session. This is the recommended approach on a
+# Raspberry Pi - GDM already handles HDMI/monitor detection reliably as part
+# of normal desktop startup, which a minimal headless X11 setup often doesn't.
 #
-# What it does:
-#   1. Installs a minimal X server + openbox + Chromium
-#   2. Auto-logs in your user on the local console (tty1)
-#   3. Auto-starts X, which auto-starts Chromium in --kiosk mode pointed at CamViewer
-#
-# SSH access is completely unaffected - this only changes what shows up on the
-# monitor physically plugged into this machine.
+# Requires a desktop environment to already be installed. If you're on
+# Ubuntu Server and haven't installed one yet:
+#   sudo apt update
+#   sudo apt install ubuntu-desktop-minimal     # lighter, recommended for a Pi
+#   sudo reboot
+# then run this script.
 #
 # Usage: bash kiosk-setup.sh
 
 set -e
 
-echo "=== CamViewer kiosk setup ==="
+echo "=== CamViewer kiosk setup (Ubuntu Desktop) ==="
 echo
+
+GDM_CONF="/etc/gdm3/custom.conf"
+if [ ! -f "$GDM_CONF" ]; then
+  echo "Could not find $GDM_CONF - it looks like GDM (Ubuntu Desktop's display"
+  echo "manager) isn't installed on this machine."
+  echo
+  echo "Install a desktop environment first, then re-run this script:"
+  echo "  sudo apt update"
+  echo "  sudo apt install ubuntu-desktop-minimal"
+  echo "  sudo reboot"
+  exit 1
+fi
 
 read -p "Local user to auto-login as [$(whoami)]: " KIOSK_USER
 KIOSK_USER=${KIOSK_USER:-$(whoami)}
@@ -24,13 +38,9 @@ read -p "URL to display [http://localhost:3000]: " KIOSK_URL
 KIOSK_URL=${KIOSK_URL:-http://localhost:3000}
 
 echo
-echo "--- Installing packages ---"
+echo "--- Installing Chromium (and curl, if missing) ---"
 sudo apt update
-sudo apt install --no-install-recommends -y \
-  xserver-xorg x11-xserver-utils xinit openbox unclutter curl
-
-# Chromium: try the regular package first, fall back to snap (Ubuntu moved it
-# to snap-only on some releases).
+sudo apt install --no-install-recommends -y curl
 if ! command -v chromium-browser >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1; then
   sudo apt install --no-install-recommends -y chromium-browser || sudo snap install chromium
 fi
@@ -42,41 +52,30 @@ fi
 echo "Using: $CHROMIUM_BIN"
 
 echo
-echo "--- Setting up auto-login on tty1 for '$KIOSK_USER' ---"
-sudo mkdir -p /etc/systemd/system/getty@tty1.service.d
-sudo tee /etc/systemd/system/getty@tty1.service.d/autologin.conf > /dev/null << EOF
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin $KIOSK_USER --noclear %I \$TERM
-EOF
-sudo systemctl daemon-reload
-# daemon-reload alone only affects FUTURE starts of the unit - the getty already
-# running on tty1 needs an explicit restart to actually pick up autologin now,
-# otherwise it just sits there still asking for a password as if nothing changed.
-sudo systemctl restart getty@tty1.service
-
-echo
-echo "--- Setting up auto-start of X on login ---"
-BASH_PROFILE="/home/$KIOSK_USER/.bash_profile"
-if ! grep -q "startx" "$BASH_PROFILE" 2>/dev/null; then
-  cat >> "$BASH_PROFILE" << 'PROFILE_EOF'
-
-# Auto-start the CamViewer kiosk display on the local console only
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-  exec startx
-fi
-PROFILE_EOF
+echo "--- Setting up GDM autologin for '$KIOSK_USER' ---"
+sudo cp "$GDM_CONF" "$GDM_CONF.bak.$(date +%s)"
+if grep -q "AutomaticLoginEnable" "$GDM_CONF"; then
+  sudo sed -i \
+    -e "s/^#\?\s*AutomaticLoginEnable\s*=.*/AutomaticLoginEnable = true/" \
+    -e "s/^#\?\s*AutomaticLogin\s*=.*/AutomaticLogin = $KIOSK_USER/" \
+    "$GDM_CONF"
+else
+  sudo sed -i "/\[daemon\]/a AutomaticLoginEnable = true\nAutomaticLogin = $KIOSK_USER" "$GDM_CONF"
 fi
 
 echo
-echo "--- Writing .xinitrc (what X runs on start) ---"
-cat > "/home/$KIOSK_USER/.xinitrc" << XINITRC_EOF
+echo "--- Writing kiosk launcher script ---"
+mkdir -p "/home/$KIOSK_USER/.local/bin"
+cat > "/home/$KIOSK_USER/.local/bin/camviewer-kiosk.sh" << EOF
 #!/bin/sh
-xset s off
-xset s noblank
-xset -dpms
-unclutter -idle 1 -root &
-openbox-session &
+# Give the desktop session a moment to fully settle before touching it
+sleep 3
+
+# Stop the screen from blanking/sleeping during kiosk use
+gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing' 2>/dev/null || true
+xset s off 2>/dev/null || true
+xset -dpms 2>/dev/null || true
 
 # Wait for CamViewer to actually be reachable before opening it, in case this
 # runs before the go2rtc/camviewer services have finished starting up.
@@ -87,23 +86,29 @@ done
 exec $CHROMIUM_BIN --noerrdialogs --disable-infobars --kiosk --incognito \\
   --no-first-run --disable-session-crashed-bubble --disable-translate \\
   --autoplay-policy=no-user-gesture-required "$KIOSK_URL"
-XINITRC_EOF
-chmod +x "/home/$KIOSK_USER/.xinitrc"
-sudo chown "$KIOSK_USER:$KIOSK_USER" "/home/$KIOSK_USER/.xinitrc" "$BASH_PROFILE"
+EOF
+chmod +x "/home/$KIOSK_USER/.local/bin/camviewer-kiosk.sh"
+
+echo
+echo "--- Setting up autostart entry ---"
+mkdir -p "/home/$KIOSK_USER/.config/autostart"
+cat > "/home/$KIOSK_USER/.config/autostart/camviewer-kiosk.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=CamViewer Kiosk
+Exec=/home/$KIOSK_USER/.local/bin/camviewer-kiosk.sh
+X-GNOME-Autostart-enabled=true
+EOF
+
+sudo chown -R "$KIOSK_USER:$KIOSK_USER" "/home/$KIOSK_USER/.local" "/home/$KIOSK_USER/.config"
 
 echo
 echo "=== Done ==="
+echo "Reboot to try it: sudo reboot"
 echo
-echo "Checking autologin status:"
-systemctl status getty@tty1.service --no-pager | grep -E "Active:|autologin" || true
+echo "Expected behavior: boots to desktop -> auto-logs in as $KIOSK_USER ->"
+echo "a few seconds later, Chromium opens fullscreen showing CamViewer."
 echo
-echo "Reboot to try it fully: sudo reboot"
-echo "SSH still works as normal - this only affects the attached monitor."
-echo
-echo "To temporarily get a terminal on the physical screen instead of the kiosk,"
-echo "press Ctrl+Alt+F2 (switches to another console) - Ctrl+Alt+F1 switches back."
-echo
-echo "If the physical screen still asks for a password after rebooting:"
-echo "  - Run: systemctl status getty@tty1   (confirm it shows --autologin $KIOSK_USER in the command)"
-echo "  - On a Raspberry Pi, the HDMI output isn't always tty1 - check /boot/firmware/cmdline.txt"
-echo "    for a 'console=' entry to see which tty is actually your primary display."
+echo "To get out of kiosk mode temporarily (for maintenance): Alt+F4 closes"
+echo "Chromium and drops you on the normal desktop. SSH access is unaffected"
+echo "by any of this either way."

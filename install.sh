@@ -139,6 +139,9 @@ echo "Visit: http://$IP:3000"
 echo
 
 # --- 6. Optional kiosk mode ---
+echo
+echo "Note: kiosk mode requires Ubuntu Desktop (not Server) - it uses GDM"
+echo "to auto-login and auto-launch a fullscreen browser."
 read -p "Also set up fullscreen kiosk mode on this machine's own monitor? [y/N]: " SETUP_KIOSK
 if [[ "$SETUP_KIOSK" =~ ^[Yy]$ ]]; then
   bash "$INSTALL_DIR/kiosk/kiosk-setup.sh"

@@ -169,25 +169,36 @@ sudo systemctl enable --now camviewer
 
 ## Kiosk mode (show it directly on a monitor)
 
-`install.sh` offers to set this up automatically at the end. To set it up
-separately (or re-run it), if you're on a headless machine (e.g. Ubuntu
-Server on a Pi) with a monitor plugged straight into it:
+**Requires Ubuntu Desktop** (not Server) - the script uses GDM (Ubuntu
+Desktop's display manager) to auto-login and auto-launch Chromium
+fullscreen, since it handles monitor/HDMI detection far more reliably on a
+Pi than a hand-rolled headless X11 setup does. If you're on Ubuntu Server:
+
+```bash
+sudo apt update
+sudo apt install ubuntu-desktop-minimal   # lighter than the full ubuntu-desktop
+sudo reboot
+```
+
+Then, from a monitor plugged straight into the machine:
 
 ```bash
 bash kiosk/kiosk-setup.sh
 ```
 
 It'll ask which local user to auto-login as and which URL to show (defaults
-to `http://localhost:3000`), then installs a minimal X session + Chromium and
-wires it to start on boot. SSH access is unaffected - this only changes what
-appears on the attached monitor. Reboot to try it:
+to `http://localhost:3000`), set up GDM autologin, and install an autostart
+entry that launches Chromium in `--kiosk` mode a few seconds after login
+(waiting until CamViewer is actually reachable first). SSH access is
+unaffected - this only changes what appears on the attached monitor.
+Reboot to try it:
 
 ```bash
 sudo reboot
 ```
 
-To get a terminal on the physical screen instead of the kiosk view (for
-maintenance), press `Ctrl+Alt+F2` (and `Ctrl+Alt+F1` to switch back).
+To get out of kiosk mode temporarily (for maintenance): `Alt+F4` closes
+Chromium and drops you on the normal desktop.
 
 ---
 
