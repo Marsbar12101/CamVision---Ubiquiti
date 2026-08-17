@@ -54,8 +54,8 @@ app's one port is.
 **1. Clone this repo**
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/camviewer.git
-cd camviewer
+git clone https://github.com/Marsbar12101/CamVision---Ubiquiti.git
+cd CamVision---Ubiquiti
 ```
 
 **2. Install Node.js** (skip if `node -v` already shows 18+)
